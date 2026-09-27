@@ -81,7 +81,7 @@ export default function RoadmapRevisionsModal({ open, onClose, apiBase, onRestor
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Geri yüklenemedi");
-      onRestore(data.canvas_data);
+      onRestore(data);
       onClose();
     } catch (err) {
       setError(err?.message || "Geri yüklenemedi");

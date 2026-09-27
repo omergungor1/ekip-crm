@@ -1,7 +1,6 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { getCurrentUser } from "@/lib/isAdmin";
-import { emptyCanvasData } from "@/lib/roadmap/constants";
 import { normalizeCanvasData } from "@/lib/roadmap/utils";
 import {
   backupRoadmapRevision,
@@ -15,7 +14,7 @@ export async function GET() {
   if (!user) return NextResponse.json({ error: "Yetkisiz" }, { status: 401 });
 
   try {
-    const data = await listRoadmapRevisions(supabase, { userId: user.id });
+    const data = await listRoadmapRevisions(supabase, { userId: user.id, workspaceId: "main" });
     return NextResponse.json(data);
   } catch (err) {
     return NextResponse.json({ error: err.message }, { status: 500 });
@@ -34,40 +33,47 @@ export async function POST(request) {
 
   try {
     const { data: current } = await supabase
-      .from("user_roadmaps")
-      .select("canvas_data")
-      .eq("user_id", user.id)
+      .from("shared_roadmaps")
+      .select("canvas_data, revision")
+      .eq("id", "main")
       .maybeSingle();
 
     if (current?.canvas_data) {
       await backupRoadmapRevision(supabase, {
         userId: user.id,
+        workspaceId: "main",
         canvasData: current.canvas_data,
       });
     }
 
     const canvas_data = await getRevisionCanvas(supabase, {
       userId: user.id,
+      workspaceId: "main",
       source,
       id,
     });
 
+    const nextRevision = (current?.revision ?? 0) + 1;
     const { data, error } = await supabase
-      .from("user_roadmaps")
-      .upsert(
-        {
-          user_id: user.id,
-          canvas_data,
-          updated_at: new Date().toISOString(),
-        },
-        { onConflict: "user_id" }
-      )
-      .select("canvas_data, updated_at")
-      .single();
+      .from("shared_roadmaps")
+      .update({
+        canvas_data,
+        revision: nextRevision,
+        updated_at: new Date().toISOString(),
+        updated_by: user.id,
+      })
+      .eq("id", "main")
+      .eq("revision", current?.revision ?? 0)
+      .select("canvas_data, revision, updated_at")
+      .maybeSingle();
 
     if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+    if (!data) {
+      return NextResponse.json({ error: "Tuval aynı anda güncellendi. Tekrar deneyin." }, { status: 409 });
+    }
     return NextResponse.json({
       canvas_data: normalizeCanvasData(data.canvas_data),
+      revision: data.revision,
       updated_at: data.updated_at,
     });
   } catch (err) {

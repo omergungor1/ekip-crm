@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { toast } from "sonner";
-import { LayoutList, SquareKanban } from "lucide-react";
+import { LayoutList, SlidersHorizontal, SquareKanban, Users } from "lucide-react";
 import PageHeader from "@/components/ui/PageHeader";
 import Button from "@/components/ui/Button";
 import SearchInput from "@/components/ui/SearchInput";
@@ -13,6 +13,7 @@ import StatusBadge from "@/components/ui/StatusBadge";
 import PriorityBadge from "@/components/ui/PriorityBadge";
 import AvatarGroup, { peopleNames } from "@/components/ui/AvatarGroup";
 import TaskBoard from "@/components/tasks/TaskBoard";
+import PersonBoard from "@/components/tasks/PersonBoard";
 import TaskModal from "@/components/tasks/TaskModal";
 import { useProfile } from "@/components/layout/AppShell";
 import { PRIORITIES, TASK_STATUSES, canManage } from "@/lib/constants";
@@ -31,6 +32,7 @@ export default function TasksView() {
   const [tags, setTags] = useState([]);
   const [loading, setLoading] = useState(true);
   const [view, setView] = useState("kanban");
+  const [filtersOpen, setFiltersOpen] = useState(false);
   const [editing, setEditing] = useState(null);
   const [search, setSearch] = useState("");
   const [mine, setMine] = useState(params.get("mine") === "1");
@@ -70,7 +72,7 @@ export default function TasksView() {
   useEffect(() => {
     return startRequest(async () => {
       const stored = window.localStorage.getItem("ekip-task-view");
-      if (stored === "list" || stored === "kanban") setView(stored);
+      if (stored === "list" || stored === "kanban" || stored === "people") setView(stored);
       await load();
     });
   }, []);
@@ -117,24 +119,35 @@ export default function TasksView() {
   const selectClass = "h-11 rounded-xl border border-line bg-white px-3 text-sm";
 
   return (
-    <div>
+    <div className="flex h-[calc(100dvh-4rem-2.5rem)] min-h-0 flex-col">
       <PageHeader
         title="İşler"
-        description="Görevleri pano veya liste olarak yönetin."
+        description="Görevleri pano, kişi veya liste olarak yönetin."
         action={canManage(profile) ? <Button onClick={() => setEditing({})}>Yeni görev</Button> : null}
       />
       <div className="mb-4 space-y-3 rounded-2xl border border-line bg-white p-3">
         <div className="flex flex-col gap-2 sm:flex-row">
           <SearchInput value={search} onChange={setSearch} placeholder="Görev ara" />
-          <div className="flex gap-2">
+          <div className="flex flex-wrap gap-2">
             <Button variant={view === "kanban" ? "primary" : "secondary"} onClick={() => changeView("kanban")}>
               <SquareKanban className="h-4 w-4" /> Kanban
             </Button>
             <Button variant={view === "list" ? "primary" : "secondary"} onClick={() => changeView("list")}>
               <LayoutList className="h-4 w-4" /> Liste
             </Button>
+            <Button variant={view === "people" ? "primary" : "secondary"} onClick={() => changeView("people")}>
+              <Users className="h-4 w-4" /> Kişi Kanban
+            </Button>
+            <Button
+              variant={filtersOpen ? "primary" : "secondary"}
+              onClick={() => setFiltersOpen((value) => !value)}
+              aria-expanded={filtersOpen}
+            >
+              <SlidersHorizontal className="h-4 w-4" /> Filtre
+            </Button>
           </div>
         </div>
+        {filtersOpen ? (
         <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
           <button type="button" className={`${selectClass} ${mine ? "border-accent text-accent" : ""}`} onClick={() => setMine((value) => !value)}>
             Bana atananlar
@@ -169,7 +182,9 @@ export default function TasksView() {
           <input type="date" className={selectClass} value={from} onChange={(event) => setFrom(event.target.value)} />
           <input type="date" className={selectClass} value={to} onChange={(event) => setTo(event.target.value)} />
         </div>
+        ) : null}
       </div>
+      <div className="min-h-0 flex-1">
       {loading ? <LoadingSkeleton lines={5} /> : null}
       {!loading && filtered.length === 0 ? (
         <EmptyState
@@ -179,10 +194,17 @@ export default function TasksView() {
         />
       ) : null}
       {!loading && filtered.length > 0 && view === "kanban" ? (
-        <TaskBoard tasks={filtered} onOpen={setEditing} onMove={move} />
+        <div className="h-full">
+          <TaskBoard tasks={filtered} onOpen={setEditing} onMove={move} />
+        </div>
+      ) : null}
+      {!loading && filtered.length > 0 && view === "people" ? (
+        <div className="h-full">
+          <PersonBoard tasks={filtered} profiles={profiles} onOpen={setEditing} />
+        </div>
       ) : null}
       {!loading && filtered.length > 0 && view === "list" ? (
-        <div className="space-y-2">
+        <div className="h-full space-y-2 overflow-y-auto">
           <div className="hidden grid-cols-[minmax(0,1.4fr)_140px_110px_160px_140px] gap-3 px-3 text-xs font-medium text-muted lg:grid">
             <span>Görev</span><span>Durum</span><span>Öncelik</span><span>Kişiler</span><span>Son tarih</span>
           </div>
@@ -214,6 +236,7 @@ export default function TasksView() {
           })}
         </div>
       ) : null}
+      </div>
       {editing ? (
         <TaskModal
           key={editing.id || "new"}

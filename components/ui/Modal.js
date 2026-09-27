@@ -1,9 +1,10 @@
 "use client";
 
 import { useEffect } from "react";
+import { createPortal } from "react-dom";
 import { X } from "lucide-react";
 
-export default function Modal({ title, onClose, children, wide = false }) {
+export default function Modal({ title, onClose, children, wide = false, level = 50 }) {
   useEffect(() => {
     function onKey(event) {
       if (event.key === "Escape") onClose();
@@ -12,12 +13,17 @@ export default function Modal({ title, onClose, children, wide = false }) {
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
 
-  return (
-    <div className="fixed inset-0 z-50 flex items-end justify-center sm:items-center sm:p-4">
+  if (typeof document === "undefined") return null;
+
+  return createPortal(
+    <div
+      className="fixed inset-0 flex items-center justify-center p-4"
+      style={{ zIndex: level, paddingLeft: "max(1rem, var(--panel-offset, 0px))" }}
+    >
       <button type="button" className="absolute inset-0 bg-ink/40" aria-label="Kapat" onClick={onClose} />
       <div
-        className={`relative flex max-h-[100dvh] w-full flex-col overflow-hidden bg-white shadow-xl sm:max-h-[92dvh] sm:rounded-2xl ${
-          wide ? "sm:max-w-3xl" : "sm:max-w-lg"
+        className={`relative flex max-h-[min(92dvh,100%)] flex-col overflow-hidden rounded-2xl bg-white shadow-xl ${
+          wide ? "w-[min(100%,48rem)]" : "w-[min(100%,32rem)]"
         }`}
       >
         <div className="flex items-center justify-between border-b border-line px-4 py-3 sm:px-5">
@@ -28,6 +34,7 @@ export default function Modal({ title, onClose, children, wide = false }) {
         </div>
         <div className="overflow-y-auto px-4 py-4 sm:px-5">{children}</div>
       </div>
-    </div>
+    </div>,
+    document.body
   );
 }

@@ -1,7 +1,8 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
+import { MoreHorizontal } from "lucide-react";
 import { toast } from "sonner";
 import PageHeader from "@/components/ui/PageHeader";
 import Button, { Field, inputClass, textareaClass } from "@/components/ui/Button";
@@ -12,6 +13,7 @@ import StatusBadge from "@/components/ui/StatusBadge";
 import SearchInput from "@/components/ui/SearchInput";
 import TagSelect from "@/components/ui/TagSelect";
 import ConfirmDialog from "@/components/ui/ConfirmDialog";
+import AnchoredMenu from "@/components/ui/AnchoredMenu";
 import { useProfile } from "@/components/layout/AppShell";
 import { CUSTOMER_STATUSES, canManage } from "@/lib/constants";
 import { listCustomers, listProfiles, listProjects, listTags, logActivity, replaceLinks } from "@/lib/data";
@@ -44,6 +46,8 @@ export default function CustomersView() {
   const [form, setForm] = useState(null);
   const [busy, setBusy] = useState(false);
   const [pendingDelete, setPendingDelete] = useState(null);
+  const [confirmClose, setConfirmClose] = useState(false);
+  const initialForm = useRef(null);
 
   async function load() {
     setLoading(true);
@@ -66,6 +70,28 @@ export default function CustomersView() {
   }
 
   useEffect(() => startRequest(() => load()), []);
+
+  function openForm(next) {
+    initialForm.current = next;
+    setConfirmClose(false);
+    setForm(next);
+  }
+
+  function isDirty() {
+    return Boolean(form) && JSON.stringify(form) !== JSON.stringify(initialForm.current);
+  }
+
+  function requestClose() {
+    if (confirmClose) {
+      setConfirmClose(false);
+      return;
+    }
+    if (isDirty()) {
+      setConfirmClose(true);
+      return;
+    }
+    setForm(null);
+  }
 
   const filtered = customers.filter((customer) => {
     const blob = `${customer.company_name} ${customer.contact_name || ""} ${customer.email || ""}`.toLocaleLowerCase("tr-TR");
@@ -125,21 +151,40 @@ export default function CustomersView() {
 
   return (
     <div>
-      <PageHeader title="Müşteriler" description="Firmaları, etiketleri ve proje bağlarını takip edin." action={canManage(profile) ? <Button onClick={() => setForm({ ...emptyCustomer, owner_id: profile.id })}>Yeni müşteri</Button> : null} />
+      <PageHeader title="Müşteriler" description="Firmaları, etiketleri ve proje bağlarını takip edin." action={canManage(profile) ? <Button onClick={() => openForm({ ...emptyCustomer, owner_id: profile.id })}>Yeni müşteri</Button> : null} />
       <div className="mb-4"><SearchInput value={search} onChange={setSearch} placeholder="Firma veya yetkili ara" /></div>
       {loading ? <LoadingSkeleton /> : null}
       {!loading && filtered.length === 0 ? (
-        <EmptyState title="Henüz müşteri bulunmuyor." description="İlk müşteri kaydını oluşturun." action={canManage(profile) ? <Button onClick={() => setForm({ ...emptyCustomer, owner_id: profile.id })}>İlk müşterini ekle</Button> : null} />
+        <EmptyState title="Henüz müşteri bulunmuyor." description="İlk müşteri kaydını oluşturun." action={canManage(profile) ? <Button onClick={() => openForm({ ...emptyCustomer, owner_id: profile.id })}>İlk müşterini ekle</Button> : null} />
       ) : null}
       <div className="grid gap-3 md:grid-cols-2">
         {filtered.map((customer) => (
           <article key={customer.id} className="rounded-2xl border border-line bg-white p-4">
             <div className="flex items-start justify-between gap-3">
-              <div>
+              <div className="min-w-0">
                 <Link href={`/customers/${customer.id}`} className="font-semibold hover:text-accent">{customer.company_name}</Link>
                 <p className="mt-1 text-sm text-muted">{customer.contact_name || "Yetkili yok"}</p>
               </div>
-              <StatusBadge kind="customer" value={customer.status} />
+              <div className="flex shrink-0 items-start gap-2">
+                <StatusBadge kind="customer" value={customer.status} />
+                {canManage(profile) ? (
+                  <CustomerCardMenu
+                    onEdit={() => openForm({
+                      ...customer,
+                      contact_name: customer.contact_name || "",
+                      phone: customer.phone || "",
+                      email: customer.email || "",
+                      address: customer.address || "",
+                      website: customer.website || "",
+                      note: customer.note || "",
+                      owner_id: customer.owner_id || "",
+                      tagIds: (customer.tags || []).map((item) => item.tag_id),
+                      projectIds: (customer.projects || []).map((item) => item.project_id),
+                    })}
+                    onDelete={() => setPendingDelete(customer)}
+                  />
+                ) : null}
+              </div>
             </div>
             <div className="mt-3 flex flex-wrap gap-1">
               {(customer.tags || []).map((item) => (
@@ -147,28 +192,11 @@ export default function CustomersView() {
               ))}
             </div>
             <p className="mt-3 text-xs text-muted">{(customer.projects || []).map((item) => item.project?.name).filter(Boolean).join(", ") || "Proje bağlı değil"}</p>
-            {canManage(profile) ? (
-              <div className="mt-4 flex gap-2">
-                <Button variant="secondary" onClick={() => setForm({
-                  ...customer,
-                  contact_name: customer.contact_name || "",
-                  phone: customer.phone || "",
-                  email: customer.email || "",
-                  address: customer.address || "",
-                  website: customer.website || "",
-                  note: customer.note || "",
-                  owner_id: customer.owner_id || "",
-                  tagIds: (customer.tags || []).map((item) => item.tag_id),
-                  projectIds: (customer.projects || []).map((item) => item.project_id),
-                })}>Düzenle</Button>
-                <Button variant="ghost" onClick={() => setPendingDelete(customer)}>Sil</Button>
-              </div>
-            ) : null}
           </article>
         ))}
       </div>
       {form ? (
-        <Modal title={form.id ? "Müşteriyi düzenle" : "Yeni müşteri"} onClose={() => setForm(null)} wide>
+        <Modal title={form.id ? "Müşteriyi düzenle" : "Yeni müşteri"} onClose={requestClose} wide>
           <form onSubmit={save} className="grid gap-3 sm:grid-cols-2">
             <Field label="Firma adı"><input className={inputClass} value={form.company_name} onChange={(event) => setForm({ ...form, company_name: event.target.value })} required /></Field>
             <Field label="Yetkili kişi"><input className={inputClass} value={form.contact_name} onChange={(event) => setForm({ ...form, contact_name: event.target.value })} /></Field>
@@ -214,13 +242,68 @@ export default function CustomersView() {
               </Field>
             </div>
             <div className="flex justify-end gap-2 sm:col-span-2">
-              <Button variant="secondary" onClick={() => setForm(null)}>Vazgeç</Button>
+              <Button variant="secondary" onClick={requestClose}>Vazgeç</Button>
               <Button type="submit" disabled={busy}>{busy ? "Kaydediliyor..." : "Kaydet"}</Button>
             </div>
           </form>
         </Modal>
       ) : null}
+      {confirmClose ? (
+        <ConfirmDialog
+          title="Emin misin?"
+          message="Bu penceredeki bilgiler henüz kaydedilmedi. Kapatırsan girdiklerin silinir."
+          confirmLabel="Kapat"
+          variant="primary"
+          onClose={() => setConfirmClose(false)}
+          onConfirm={() => {
+            setConfirmClose(false);
+            setForm(null);
+          }}
+        />
+      ) : null}
       {pendingDelete ? <ConfirmDialog title="Müşteriyi sil" message={`${pendingDelete.company_name} silinsin mi?`} onClose={() => setPendingDelete(null)} onConfirm={removeCustomer} /> : null}
+    </div>
+  );
+}
+
+function CustomerCardMenu({ onEdit, onDelete }) {
+  const [open, setOpen] = useState(false);
+  const anchorRef = useRef(null);
+
+  return (
+    <div className="shrink-0">
+      <button
+        ref={anchorRef}
+        type="button"
+        aria-label="Diğer işlemler"
+        aria-expanded={open}
+        className="grid h-9 w-9 place-items-center rounded-xl text-zinc-500 hover:bg-zinc-100"
+        onClick={() => setOpen((current) => !current)}
+      >
+        <MoreHorizontal className="h-5 w-5" />
+      </button>
+      <AnchoredMenu open={open} anchorRef={anchorRef} onClose={() => setOpen(false)} align="end" width={168}>
+        <button
+          type="button"
+          className="flex w-full items-center rounded-lg px-3 py-2 text-left text-sm hover:bg-zinc-50"
+          onClick={() => {
+            setOpen(false);
+            onEdit();
+          }}
+        >
+          Düzenle
+        </button>
+        <button
+          type="button"
+          className="flex w-full items-center rounded-lg px-3 py-2 text-left text-sm text-rose-600 hover:bg-rose-50"
+          onClick={() => {
+            setOpen(false);
+            onDelete();
+          }}
+        >
+          Sil
+        </button>
+      </AnchoredMenu>
     </div>
   );
 }

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import Modal from "@/components/ui/Modal";
 import Button, { Field, inputClass, textareaClass } from "@/components/ui/Button";
@@ -34,10 +34,12 @@ function formFrom(task, profile) {
 
 export default function TaskModal({ task, profiles, projects, customers, tags, profile, onClose, onSaved, onTagCreated }) {
   const manageable = canManage(profile);
-  const [form, setForm] = useState(() => formFrom(task, profile));
+  const initialForm = useRef(formFrom(task, profile));
+  const [form, setForm] = useState(initialForm.current);
   const [detail, setDetail] = useState(null);
   const [busy, setBusy] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [confirmClose, setConfirmClose] = useState(false);
   const [checkTitle, setCheckTitle] = useState("");
   const [comment, setComment] = useState("");
 
@@ -55,6 +57,26 @@ export default function TaskModal({ task, profiles, projects, customers, tags, p
 
   function set(key, value) {
     setForm((current) => ({ ...current, [key]: value }));
+  }
+
+  function isDirty() {
+    return (
+      JSON.stringify(form) !== JSON.stringify(initialForm.current) ||
+      checkTitle.trim() !== "" ||
+      comment.trim() !== ""
+    );
+  }
+
+  function requestClose() {
+    if (confirmClose) {
+      setConfirmClose(false);
+      return;
+    }
+    if (isDirty()) {
+      setConfirmClose(true);
+      return;
+    }
+    onClose();
   }
 
   async function save(event) {
@@ -173,7 +195,7 @@ export default function TaskModal({ task, profiles, projects, customers, tags, p
   const doneCount = checklists.filter((item) => item.is_done).length;
 
   return (
-    <Modal title={task?.id ? "Görev" : "Yeni görev"} onClose={onClose} wide>
+    <Modal title={task?.id ? "Görev" : "Yeni görev"} onClose={requestClose} wide>
       <form onSubmit={save} className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_280px]">
         <div className="space-y-4">
           <Field label="Başlık">
@@ -259,7 +281,7 @@ export default function TaskModal({ task, profiles, projects, customers, tags, p
               <Button variant="danger" onClick={() => setConfirmDelete(true)}>Sil</Button>
             ) : <span />}
             <div className="flex gap-2">
-              <Button variant="secondary" onClick={onClose}>Vazgeç</Button>
+              <Button variant="secondary" onClick={requestClose}>Vazgeç</Button>
               <Button type="submit" disabled={busy}>{busy ? "Kaydediliyor..." : "Kaydet"}</Button>
             </div>
           </div>
@@ -300,6 +322,16 @@ export default function TaskModal({ task, profiles, projects, customers, tags, p
           ) : null}
         </aside>
       </form>
+      {confirmClose ? (
+        <ConfirmDialog
+          title="Emin misin?"
+          message="Bu penceredeki bilgiler henüz kaydedilmedi. Kapatırsan girdiklerin silinir."
+          confirmLabel="Kapat"
+          variant="primary"
+          onClose={() => setConfirmClose(false)}
+          onConfirm={onClose}
+        />
+      ) : null}
       {confirmDelete ? (
         <ConfirmDialog
           title="Görevi sil"

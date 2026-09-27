@@ -25,6 +25,17 @@ export default function AppShell({ profile, children }) {
     });
   }, []);
 
+  useEffect(() => {
+    const desktop = window.matchMedia("(min-width: 1024px)");
+    function apply() {
+      const offset = fullscreen ? "0px" : desktop.matches ? (collapsed ? "76px" : "256px") : "0px";
+      document.documentElement.style.setProperty("--panel-offset", offset);
+    }
+    apply();
+    desktop.addEventListener("change", apply);
+    return () => desktop.removeEventListener("change", apply);
+  }, [collapsed, fullscreen]);
+
   function toggleCollapsed() {
     setCollapsed((value) => {
       const next = !value;

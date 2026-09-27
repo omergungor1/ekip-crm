@@ -39,6 +39,9 @@ import RoadmapSnapshotsModal from "./RoadmapSnapshotsModal";
 import RoadmapToolbox from "./RoadmapToolbox";
 import { captureRoadmapCanvas } from "@/lib/roadmap/captureViewport";
 import { buildAlignableItems, computeAlignmentMoves } from "@/lib/roadmap/alignSelection";
+import { isCanvasContentEmpty, mergeCanvas } from "@/lib/roadmap/mergeCanvas";
+import { createClient } from "@/lib/supabase/client";
+import { startRequest } from "@/lib/load";
 import RoadmapAlignMenu from "./RoadmapAlignMenu";
 
 function countAnchorUsage(edges, nodeId, anchor) {
@@ -127,6 +130,20 @@ export default function RoadmapShell({ projectId = null, onBack, projectName }) 
   const saveTimerRef = useRef(null);
   const zoomRef = useRef(1);
   const pendingZoomScrollRef = useRef(null);
+  const revisionRef = useRef(0);
+  const baseCanvasRef = useRef({ nodes: [], edges: [], annotations: [] });
+  const contentRef = useRef({ nodes: [], edges: [], annotations: [] });
+  const hydratedRef = useRef(false);
+  const draggingRef = useRef(null);
+  const linkingRef = useRef(null);
+  const baseHadContentRef = useRef(false);
+  const pendingRemoteRef = useRef(null);
+  const [liveLabel, setLiveLabel] = useState("");
+
+  contentRef.current = { nodes, edges, annotations };
+  draggingRef.current = dragging;
+  linkingRef.current = linking;
+  hydratedRef.current = hydrated;
 
   useEffect(() => {
     zoomRef.current = zoom;
@@ -231,23 +248,21 @@ export default function RoadmapShell({ projectId = null, onBack, projectName }) 
     };
   }, []);
 
-  function applyCanvasData(canvasData) {
+  function applyCanvasData(payload) {
+    const canvasData = payload?.canvas_data || payload;
     const normalized = normalizeCanvasData(canvasData);
+    if (typeof payload?.revision === "number") revisionRef.current = payload.revision;
+    baseCanvasRef.current = {
+      nodes: normalized.nodes,
+      edges: normalized.edges,
+      annotations: normalized.annotations,
+    };
+    if (!isCanvasContentEmpty(normalized)) baseHadContentRef.current = true;
     setNodes(normalized.nodes);
     setEdges(normalized.edges);
     setAnnotations(normalized.annotations);
     setSavedFingerprint(contentFingerprint(normalized));
     clearSelection();
-    zoomRef.current = 1;
-    setZoom(1);
-    pendingZoomScrollRef.current = null;
-    requestAnimationFrame(() => {
-      const el = canvasRef.current;
-      if (el) {
-        el.scrollLeft = 0;
-        el.scrollTop = 0;
-      }
-    });
   }
 
   function buildSelectionOrigins(nodeIds, annotationIds) {
@@ -408,6 +423,13 @@ export default function RoadmapShell({ projectId = null, onBack, projectName }) 
         if (!res.ok) throw new Error(data.error || "Yüklenemedi");
         if (cancelled) return;
         const normalized = normalizeCanvasData(data.canvas_data);
+        revisionRef.current = Number(data.revision) || 0;
+        baseCanvasRef.current = {
+          nodes: normalized.nodes,
+          edges: normalized.edges,
+          annotations: normalized.annotations,
+        };
+        baseHadContentRef.current = !isCanvasContentEmpty(normalized);
         setNodes(normalized.nodes);
         setEdges(normalized.edges);
         setAnnotations(normalized.annotations);
@@ -437,19 +459,79 @@ export default function RoadmapShell({ projectId = null, onBack, projectName }) 
     };
   }, [apiUrl]);
 
+  const acceptRemote = useCallback((row, { force = false, replace = false } = {}) => {
+    if (!hydratedRef.current || !row?.canvas_data) return;
+    const revision = Number(row.revision) || 0;
+    if (!force && revision <= revisionRef.current) return;
+    if (!force && (draggingRef.current || linkingRef.current)) {
+      pendingRemoteRef.current = row;
+      return;
+    }
+
+    const remote = normalizeCanvasData(row.canvas_data);
+    const remoteContent = {
+      nodes: remote.nodes,
+      edges: remote.edges,
+      annotations: remote.annotations,
+    };
+    const local = contentRef.current;
+    const base = baseCanvasRef.current;
+    const localFp = contentFingerprint(local);
+    const baseFp = contentFingerprint(base);
+    const remoteFp = contentFingerprint(remoteContent);
+    const next = replace || localFp === baseFp || localFp === remoteFp
+      ? remoteContent
+      : mergeCanvas(base, local, remoteContent);
+
+    revisionRef.current = revision;
+    baseCanvasRef.current = remoteContent;
+    if (!isCanvasContentEmpty(remoteContent) || !isCanvasContentEmpty(next)) {
+      baseHadContentRef.current = true;
+    }
+    if (contentFingerprint(next) !== localFp) {
+      setNodes(next.nodes);
+      setEdges(next.edges);
+      setAnnotations(next.annotations);
+    }
+    setSavedFingerprint(remoteFp);
+  }, []);
+
   const saveCanvas = useCallback(async (data) => {
+    if (!hydratedRef.current) return;
     setSaving(true);
     setSaveMsg("");
     try {
       const normalized = normalizeCanvasData(data);
+      const empty = isCanvasContentEmpty(normalized);
       const res = await fetch(apiUrl, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ canvas_data: normalized }),
+        body: JSON.stringify({
+          canvas_data: normalized,
+          base_revision: revisionRef.current,
+          confirm_empty: empty && baseHadContentRef.current,
+        }),
       });
-      const result = await res.json();
+      const result = await res.json().catch(() => ({}));
+      if (res.status === 422) {
+        acceptRemote(result, { force: true, replace: true });
+        setSaveMsg("Boş kayıt engellendi");
+        return;
+      }
+      if (res.status === 409) {
+        acceptRemote(result, { force: true });
+        return;
+      }
       if (!res.ok) throw new Error(result.error || "Kaydedilemedi");
-      setSavedFingerprint(contentFingerprint(result.canvas_data || data));
+      const saved = normalizeCanvasData(result.canvas_data || data);
+      revisionRef.current = Number(result.revision) || revisionRef.current;
+      baseCanvasRef.current = {
+        nodes: saved.nodes,
+        edges: saved.edges,
+        annotations: saved.annotations,
+      };
+      if (!isCanvasContentEmpty(saved)) baseHadContentRef.current = true;
+      setSavedFingerprint(contentFingerprint(saved));
       setSaveMsg("Kaydedildi");
       setTimeout(() => setSaveMsg(""), 2000);
     } catch (e) {
@@ -457,15 +539,17 @@ export default function RoadmapShell({ projectId = null, onBack, projectName }) 
     } finally {
       setSaving(false);
     }
-  }, [apiUrl]);
+  }, [apiUrl, acceptRemote]);
 
   const saveNow = useCallback(() => {
+    if (!hydratedRef.current || loadError) return;
     if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
     saveCanvas({ viewport: savedViewport, nodes, edges, annotations });
-  }, [nodes, edges, annotations, saveCanvas]);
+  }, [nodes, edges, annotations, loadError, saveCanvas]);
 
   useEffect(() => {
     if (loading || !hydrated || loadError) return;
+    if (dragging || linking || marquee) return;
     if (!isDirty) return;
     if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
     saveTimerRef.current = setTimeout(() => {
@@ -474,7 +558,41 @@ export default function RoadmapShell({ projectId = null, onBack, projectName }) 
     return () => {
       if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
     };
-  }, [nodes, edges, annotations, loading, hydrated, loadError, isDirty, saveCanvas]);
+  }, [nodes, edges, annotations, loading, hydrated, loadError, isDirty, dragging, linking, marquee, saveCanvas]);
+
+  useEffect(() => {
+    if (dragging || linking || !pendingRemoteRef.current) return;
+    const pending = pendingRemoteRef.current;
+    pendingRemoteRef.current = null;
+    return startRequest((isActive) => {
+      if (!isActive()) return;
+      acceptRemote(pending);
+    });
+  }, [dragging, linking, acceptRemote]);
+
+  useEffect(() => {
+    if (!hydrated || projectId) return;
+    const supabase = createClient();
+    const channel = supabase
+      .channel("shared-roadmap")
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "shared_roadmaps", filter: "id=eq.main" },
+        (payload) => {
+          if (payload?.new) acceptRemote(payload.new);
+        }
+      )
+      .subscribe((status) => {
+        if (status === "SUBSCRIBED") setLiveLabel("Canlı");
+        else if (status === "CHANNEL_ERROR" || status === "TIMED_OUT" || status === "CLOSED") {
+          setLiveLabel("Bağlantı koptu");
+        }
+      });
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [hydrated, projectId, acceptRemote]);
 
   const duplicateSelection = useCallback(() => {
     if (selectedNodeIds.length === 0 && selectedAnnotationIds.length === 0) return;
@@ -1430,6 +1548,7 @@ export default function RoadmapShell({ projectId = null, onBack, projectName }) 
               {!saving && saveMsg && (
                 <span className="text-emerald-600 dark:text-emerald-400">{saveMsg}</span>
               )}
+              {liveLabel ? <span>{liveLabel}</span> : null}
               {!saving && !saveMsg && isDirty && <span>Kaydedilecek…</span>}
               {!saving && !saveMsg && !isDirty && <span>Kaydedildi</span>}
             </div>

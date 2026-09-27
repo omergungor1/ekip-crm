@@ -37,12 +37,12 @@ function Column({ status, tasks, onOpen }) {
   const { setNodeRef, isOver } = useDroppable({ id: `column:${status.id}` });
 
   return (
-    <section className="flex w-[84vw] shrink-0 snap-start flex-col rounded-2xl bg-zinc-100 p-3 sm:w-80">
+    <section className="flex h-full w-[84vw] shrink-0 snap-start flex-col rounded-2xl bg-zinc-100 p-3 sm:w-80">
       <header className="mb-3 flex items-center justify-between px-1">
         <h3 className="text-sm font-semibold">{status.label}</h3>
         <span className="rounded-full bg-white px-2 py-0.5 text-xs text-muted">{tasks.length}</span>
       </header>
-      <div ref={setNodeRef} className={`flex min-h-48 flex-1 flex-col gap-2 rounded-xl ${isOver ? "bg-white/70" : ""}`}>
+      <div ref={setNodeRef} className={`flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto rounded-xl ${isOver ? "bg-white/70" : ""}`}>
         <SortableContext items={tasks.map((task) => task.id)} strategy={verticalListSortingStrategy}>
           {tasks.map((task) => (
             <SortableTask key={task.id} task={task} onOpen={onOpen} />
@@ -79,7 +79,7 @@ export default function TaskBoard({ tasks, onOpen, onMove }) {
       onDragEnd={onDragEnd}
       onDragCancel={() => setActiveId(null)}
     >
-      <div className="flex gap-3 overflow-x-auto pb-3 snap-x">
+      <div className="flex h-full snap-x gap-3 overflow-x-auto pb-3">
         {TASK_STATUSES.map((status) => (
           <Column
             key={status.id}

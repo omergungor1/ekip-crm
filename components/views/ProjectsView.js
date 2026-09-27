@@ -1,8 +1,9 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import Image from "next/image";
+import { MoreHorizontal } from "lucide-react";
 import { toast } from "sonner";
 import PageHeader from "@/components/ui/PageHeader";
 import Button, { Field, inputClass, textareaClass } from "@/components/ui/Button";
@@ -13,6 +14,7 @@ import StatusBadge from "@/components/ui/StatusBadge";
 import AvatarGroup from "@/components/ui/AvatarGroup";
 import UserMultiSelect from "@/components/ui/UserMultiSelect";
 import ConfirmDialog from "@/components/ui/ConfirmDialog";
+import AnchoredMenu from "@/components/ui/AnchoredMenu";
 import { useProfile } from "@/components/layout/AppShell";
 import { PROJECT_COLORS, PROJECT_STATUSES, canManage } from "@/lib/constants";
 import { listCustomers, listProfiles, listProjects, listTasks, logActivity, replaceLinks } from "@/lib/data";
@@ -158,26 +160,26 @@ export default function ProjectsView() {
                   <Link href={`/projects/${project.id}`} className="block truncate font-semibold hover:text-accent">{project.name}</Link>
                   <div className="mt-2"><StatusBadge kind="project" value={project.status} /></div>
                 </div>
+                {canManage(profile) ? (
+                  <ProjectCardMenu
+                    onEdit={() => {
+                      setLogoFile(null);
+                      setForm({
+                        ...project,
+                        description: project.description || "",
+                        start_date: project.start_date || "",
+                        manager_id: project.manager_id || profile.id,
+                        memberIds: members.map((item) => item.id),
+                      });
+                    }}
+                    onDelete={() => setPendingDelete(project)}
+                  />
+                ) : null}
               </div>
               <div className="mt-4 flex items-center justify-between text-sm text-muted">
                 <AvatarGroup people={members} />
                 <span>{customerCount} müşteri · {openTasks} açık görev</span>
               </div>
-              {canManage(profile) ? (
-                <div className="mt-4 flex gap-2">
-                  <Button variant="secondary" onClick={() => {
-                    setLogoFile(null);
-                    setForm({
-                      ...project,
-                      description: project.description || "",
-                      start_date: project.start_date || "",
-                      manager_id: project.manager_id || profile.id,
-                      memberIds: members.map((item) => item.id),
-                    });
-                  }}>Düzenle</Button>
-                  <Button variant="ghost" onClick={() => setPendingDelete(project)}>Sil</Button>
-                </div>
-              ) : null}
             </article>
           );
         })}
@@ -221,6 +223,48 @@ export default function ProjectsView() {
         </Modal>
       ) : null}
       {pendingDelete ? <ConfirmDialog title="Projeyi sil" message={`${pendingDelete.name} ve bağlı üyelikler silinecek. Görevler projeden ayrılır.`} onClose={() => setPendingDelete(null)} onConfirm={removeProject} /> : null}
+    </div>
+  );
+}
+
+function ProjectCardMenu({ onEdit, onDelete }) {
+  const [open, setOpen] = useState(false);
+  const anchorRef = useRef(null);
+
+  return (
+    <div className="shrink-0">
+      <button
+        ref={anchorRef}
+        type="button"
+        aria-label="Diğer işlemler"
+        aria-expanded={open}
+        className="grid h-9 w-9 place-items-center rounded-xl text-zinc-500 hover:bg-zinc-100"
+        onClick={() => setOpen((current) => !current)}
+      >
+        <MoreHorizontal className="h-5 w-5" />
+      </button>
+      <AnchoredMenu open={open} anchorRef={anchorRef} onClose={() => setOpen(false)} align="end" width={168}>
+        <button
+          type="button"
+          className="flex w-full items-center rounded-lg px-3 py-2 text-left text-sm hover:bg-zinc-50"
+          onClick={() => {
+            setOpen(false);
+            onEdit();
+          }}
+        >
+          Düzenle
+        </button>
+        <button
+          type="button"
+          className="flex w-full items-center rounded-lg px-3 py-2 text-left text-sm text-rose-600 hover:bg-rose-50"
+          onClick={() => {
+            setOpen(false);
+            onDelete();
+          }}
+        >
+          Sil
+        </button>
+      </AnchoredMenu>
     </div>
   );
 }
