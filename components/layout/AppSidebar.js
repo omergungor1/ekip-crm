@@ -8,6 +8,7 @@ import {
   FolderKanban,
   LayoutDashboard,
   LayoutTemplate,
+  Megaphone,
   Settings,
   SquareKanban,
   Users,
@@ -22,6 +23,7 @@ const ICONS = {
   Building2,
   CreditCard,
   LayoutTemplate,
+  Megaphone,
   Users,
 };
 

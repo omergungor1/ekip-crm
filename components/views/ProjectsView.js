@@ -28,9 +28,17 @@ const emptyProject = {
   color: PROJECT_COLORS[0],
   status: "planning",
   start_date: "",
+  logo_url: "",
   manager_id: "",
   memberIds: [],
 };
+
+function storedLogoPath(url) {
+  const marker = "/storage/v1/object/public/avatars/";
+  const index = String(url || "").indexOf(marker);
+  if (index === -1) return "";
+  return decodeURIComponent(String(url).slice(index + marker.length).split("?")[0]);
+}
 
 export default function ProjectsView() {
   const profile = useProfile();
@@ -41,7 +49,10 @@ export default function ProjectsView() {
   const [loading, setLoading] = useState(true);
   const [form, setForm] = useState(null);
   const [logoFile, setLogoFile] = useState(null);
+  const [logoPreview, setLogoPreview] = useState("");
+  const [removeLogo, setRemoveLogo] = useState(false);
   const [busy, setBusy] = useState(false);
+  const logoInputRef = useRef(null);
   const [pendingDelete, setPendingDelete] = useState(null);
 
   async function load() {
@@ -66,9 +77,57 @@ export default function ProjectsView() {
 
   useEffect(() => startRequest(() => load()), []);
 
-  function openCreate() {
+  function resetLogo(url) {
+    if (logoPreview.startsWith("blob:")) URL.revokeObjectURL(logoPreview);
     setLogoFile(null);
+    setLogoPreview("");
+    setRemoveLogo(false);
+    if (logoInputRef.current) logoInputRef.current.value = "";
+    return url || "";
+  }
+
+  function openCreate() {
+    resetLogo("");
     setForm({ ...emptyProject, manager_id: profile.id, memberIds: [profile.id] });
+  }
+
+  function openEdit(project, members) {
+    resetLogo(project.logo_url);
+    setForm({
+      ...project,
+      description: project.description || "",
+      start_date: project.start_date || "",
+      logo_url: project.logo_url || "",
+      manager_id: project.manager_id || profile.id,
+      memberIds: members.map((item) => item.id),
+    });
+  }
+
+  function pickLogo(event) {
+    const file = event.target.files?.[0] || null;
+    if (!file) return;
+    if (!file.type.startsWith("image/")) {
+      toast.error("Logo bir görsel olmalı.");
+      event.target.value = "";
+      return;
+    }
+    if (file.size > 2 * 1024 * 1024) {
+      toast.error("Logo 2 MB'dan büyük olamaz.");
+      event.target.value = "";
+      return;
+    }
+    if (logoPreview.startsWith("blob:")) URL.revokeObjectURL(logoPreview);
+    setLogoFile(file);
+    setLogoPreview(URL.createObjectURL(file));
+    setRemoveLogo(false);
+  }
+
+  function clearLogo() {
+    if (logoPreview.startsWith("blob:")) URL.revokeObjectURL(logoPreview);
+    setLogoFile(null);
+    setLogoPreview("");
+    setRemoveLogo(true);
+    if (logoInputRef.current) logoInputRef.current.value = "";
   }
 
   async function save(event) {
@@ -100,13 +159,26 @@ export default function ProjectsView() {
       }
       const memberIds = Array.from(new Set([payload.manager_id, profile.id, ...form.memberIds].filter(Boolean)));
       await replaceLinks("project_members", "project_id", id, "profile_id", memberIds);
+      const previousLogo = form.logo_url || "";
       if (logoFile) {
         const safeName = logoFile.name.replace(/[^a-zA-Z0-9._-]/g, "_");
         const path = `projects/${id}/${Date.now()}-${safeName}`;
-        const { error: uploadError } = await supabase.storage.from("avatars").upload(path, logoFile);
+        const { error: uploadError } = await supabase.storage.from("avatars").upload(path, logoFile, {
+          contentType: logoFile.type || "image/png",
+        });
         if (uploadError) throw uploadError;
         const { data: publicUrl } = supabase.storage.from("avatars").getPublicUrl(path);
         const { error } = await supabase.from("projects").update({ logo_url: publicUrl.publicUrl }).eq("id", id);
+        if (error) throw error;
+        const oldPath = storedLogoPath(previousLogo);
+        if (oldPath.startsWith(`projects/${id}/`)) await supabase.storage.from("avatars").remove([oldPath]);
+      } else if (removeLogo && previousLogo) {
+        const oldPath = storedLogoPath(previousLogo);
+        if (oldPath.startsWith(`projects/${id}/`)) {
+          const { error: removeError } = await supabase.storage.from("avatars").remove([oldPath]);
+          if (removeError) throw removeError;
+        }
+        const { error } = await supabase.from("projects").update({ logo_url: null }).eq("id", id);
         if (error) throw error;
       }
       toast.success(form.id ? "Proje güncellendi." : "Proje oluşturuldu.");
@@ -162,16 +234,7 @@ export default function ProjectsView() {
                 </div>
                 {canManage(profile) ? (
                   <ProjectCardMenu
-                    onEdit={() => {
-                      setLogoFile(null);
-                      setForm({
-                        ...project,
-                        description: project.description || "",
-                        start_date: project.start_date || "",
-                        manager_id: project.manager_id || profile.id,
-                        memberIds: members.map((item) => item.id),
-                      });
-                    }}
+                    onEdit={() => openEdit(project, members)}
                     onDelete={() => setPendingDelete(project)}
                   />
                 ) : null}
@@ -197,7 +260,35 @@ export default function ProjectsView() {
               </div>
             </Field>
             <Field label="Logo">
-              <input type="file" accept="image/*" className="block w-full text-sm" onChange={(event) => setLogoFile(event.target.files?.[0] || null)} />
+              <div className="flex items-center gap-3">
+                {logoPreview || (!removeLogo && form.logo_url) ? (
+                  <img
+                    src={logoPreview || form.logo_url}
+                    alt=""
+                    className="h-14 w-14 rounded-xl object-cover"
+                  />
+                ) : (
+                  <span className="grid h-14 w-14 shrink-0 place-items-center rounded-xl text-sm font-semibold text-white" style={{ background: form.color }}>
+                    {(form.name || "P").slice(0, 1).toLocaleUpperCase("tr-TR")}
+                  </span>
+                )}
+                <div className="min-w-0 flex-1 space-y-2">
+                  <input
+                    ref={logoInputRef}
+                    type="file"
+                    accept="image/png,image/jpeg,image/webp,image/gif"
+                    className="block w-full text-sm"
+                    onChange={pickLogo}
+                  />
+                  {logoPreview || (!removeLogo && form.logo_url) ? (
+                    <button type="button" className="text-sm font-medium text-rose-600" onClick={clearLogo}>
+                      Logoyu kaldır
+                    </button>
+                  ) : (
+                    <p className="text-xs text-muted">İsteğe bağlı. PNG, JPG veya WEBP, en fazla 2 MB.</p>
+                  )}
+                </div>
+              </div>
             </Field>
             <div className="grid gap-3 sm:grid-cols-2">
               <Field label="Durum">

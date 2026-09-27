@@ -1,16 +1,20 @@
 "use client";
 
 import { useState } from "react";
-import { useRouter } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import { LogOut, Menu, PanelLeft, User } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
+import { useSocialProject } from "@/components/layout/SocialProjectContext";
 import UserAvatar from "@/components/ui/UserAvatar";
 
 export default function AppHeader({ profile, onMenu, collapsed, onToggleCollapse }) {
   const router = useRouter();
+  const pathname = usePathname();
+  const { projectId, setProjectId, projects } = useSocialProject();
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const name = profile.full_name || profile.username;
+  const socialPage = pathname === "/sosyal-medya" || pathname.startsWith("/sosyal-medya/");
 
   async function logout() {
     setBusy(true);
@@ -40,6 +44,23 @@ export default function AppHeader({ profile, onMenu, collapsed, onToggleCollapse
           <PanelLeft className="h-5 w-5" />
         </button>
       </div>
+      {socialPage ? (
+        <div className="min-w-0 flex-1">
+          <select
+            aria-label="Proje"
+            className="h-11 w-full max-w-sm rounded-xl border border-line bg-white px-3 text-sm outline-none ring-accent/15 focus:border-accent focus:ring-4"
+            value={projectId}
+            onChange={(event) => setProjectId(event.target.value)}
+          >
+            <option value="">Proje seç</option>
+            {projects.map((project) => (
+              <option key={project.id} value={project.id}>{project.name}</option>
+            ))}
+          </select>
+        </div>
+      ) : (
+        <div className="flex-1" />
+      )}
       <div className="relative">
         <button
           type="button"
