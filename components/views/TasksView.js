@@ -31,7 +31,7 @@ export default function TasksView() {
   const [customers, setCustomers] = useState([]);
   const [tags, setTags] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [view, setView] = useState("kanban");
+  const [view, setView] = useState("people");
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [editing, setEditing] = useState(null);
   const [search, setSearch] = useState("");

@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { ChevronDown, MoreHorizontal } from "lucide-react";
 import Link from "next/link";
 import { toast } from "sonner";
 import PageHeader from "@/components/ui/PageHeader";
@@ -13,6 +14,7 @@ import StatusBadge from "@/components/ui/StatusBadge";
 import UserAvatar from "@/components/ui/UserAvatar";
 import AvatarGroup, { peopleNames } from "@/components/ui/AvatarGroup";
 import ConfirmDialog from "@/components/ui/ConfirmDialog";
+import AnchoredMenu from "@/components/ui/AnchoredMenu";
 import { useProfile } from "@/components/layout/AppShell";
 import { GOAL_STATUSES, canManage } from "@/lib/constants";
 import { listActivities, listCustomers, listGoals, listProjects, listTasks, logActivity } from "@/lib/data";
@@ -25,7 +27,7 @@ function StatCard({ label, value, href }) {
   return (
     <Link href={href} className="rounded-2xl border border-line bg-white p-4 hover:border-zinc-300">
       <div className="text-sm text-muted">{label}</div>
-      <div className="mt-2 text-3xl font-semibold tracking-tight">{value}</div>
+      <div className="mt-2 text-2xl font-semibold tracking-tight sm:text-3xl">{value}</div>
     </Link>
   );
 }
@@ -48,7 +50,9 @@ export default function DashboardView() {
   const [projects, setProjects] = useState([]);
   const [customers, setCustomers] = useState([]);
   const [goals, setGoals] = useState([]);
-  const [activities, setActivities] = useState([]);
+  const [activitiesOpen, setActivitiesOpen] = useState(false);
+  const [activities, setActivities] = useState(null);
+  const [activitiesLoading, setActivitiesLoading] = useState(false);
   const [goalForm, setGoalForm] = useState(null);
   const [busy, setBusy] = useState(false);
   const [pendingDelete, setPendingDelete] = useState(null);
@@ -56,18 +60,16 @@ export default function DashboardView() {
   async function load() {
     setLoading(true);
     try {
-      const [taskRows, projectRows, customerRows, goalRows, activityRows] = await Promise.all([
+      const [taskRows, projectRows, customerRows, goalRows] = await Promise.all([
         listTasks(),
         listProjects(),
         listCustomers(),
         listGoals(),
-        listActivities(12),
       ]);
       setTasks(taskRows);
       setProjects(projectRows);
       setCustomers(customerRows);
       setGoals(goalRows);
-      setActivities(activityRows);
     } catch (error) {
       toast.error(errorMessage(error, "Panel yüklenemedi."));
     } finally {
@@ -129,6 +131,24 @@ export default function DashboardView() {
     }
   }
 
+  async function toggleActivities() {
+    if (activitiesOpen) {
+      setActivitiesOpen(false);
+      return;
+    }
+    setActivitiesOpen(true);
+    if (activities) return;
+    setActivitiesLoading(true);
+    try {
+      setActivities(await listActivities(12));
+    } catch (error) {
+      toast.error(errorMessage(error, "Aktiviteler yüklenemedi."));
+      setActivities([]);
+    } finally {
+      setActivitiesLoading(false);
+    }
+  }
+
   async function removeGoal() {
     const supabase = createClient();
     const { error } = await supabase.from("goals").delete().eq("id", pendingDelete.id);
@@ -142,7 +162,7 @@ export default function DashboardView() {
     <div className="space-y-6">
       <PageHeader title="Ana Sayfa" description={`Merhaba ${profile.full_name || profile.username}, bugünkü operasyon özeti.`} />
       {loading ? <CardSkeletonGrid /> : (
-        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+        <div className="grid grid-cols-2 gap-3 xl:grid-cols-4">
           <StatCard label="Aktif Müşteriler" value={activeCustomers} href="/customers" />
           <StatCard label="Aktif Projeler" value={activeProjects} href="/projects" />
           <StatCard label="Açık Görevler" value={openTasks.length} href="/tasks?open=1" />
@@ -164,24 +184,26 @@ export default function DashboardView() {
               return (
                 <article key={goal.id} className="rounded-2xl border border-line bg-white p-4">
                   <div className="flex items-start justify-between gap-3">
-                    <div>
+                    <div className="min-w-0">
                       <h3 className="font-semibold">{goal.title}</h3>
                       {goal.description ? <p className="mt-1 text-sm text-muted">{goal.description}</p> : null}
                     </div>
-                    <StatusBadge kind="goal" value={goal.status} />
+                    <div className="flex shrink-0 items-center gap-1">
+                      <StatusBadge kind="goal" value={goal.status} />
+                      {canManage(profile) ? (
+                        <GoalCardMenu
+                          onEdit={() => setGoalForm({ ...goal, target_value: goal.target_value, current_value: goal.current_value, start_date: goal.start_date || "", end_date: goal.end_date || "", project_id: goal.project_id || "", description: goal.description || "" })}
+                          onDelete={() => setPendingDelete(goal)}
+                        />
+                      ) : null}
+                    </div>
                   </div>
                   <div className="mt-4 text-sm text-zinc-600">
                     {Number(goal.current_value)} / {Number(goal.target_value)} · %{progress}
                   </div>
                   <div className="mt-2"><ProgressBar value={progress} /></div>
-                  <div className="mt-3 flex items-center justify-between text-xs text-muted">
-                    <span>{goal.project?.name || "Genel hedef"} · {goalRemaining(goal)}</span>
-                    {canManage(profile) ? (
-                      <span className="flex gap-2">
-                        <button type="button" className="font-medium text-accent" onClick={() => setGoalForm({ ...goal, target_value: goal.target_value, current_value: goal.current_value, start_date: goal.start_date || "", end_date: goal.end_date || "", project_id: goal.project_id || "", description: goal.description || "" })}>Düzenle</button>
-                        <button type="button" className="font-medium text-rose-600" onClick={() => setPendingDelete(goal)}>Sil</button>
-                      </span>
-                    ) : null}
+                  <div className="mt-3 text-xs text-muted">
+                    {goal.project?.name || "Genel hedef"} · {goalRemaining(goal)}
                   </div>
                 </article>
               );
@@ -229,20 +251,31 @@ export default function DashboardView() {
         </div>
       </section>
 
-      <section className="rounded-2xl border border-line bg-white p-4">
-        <h2 className="mb-3 text-lg font-semibold">Son aktiviteler</h2>
-        {activities.length === 0 ? <p className="text-sm text-muted">Henüz aktivite yok.</p> : null}
-        <div className="space-y-3">
-          {activities.map((item) => (
-            <div key={item.id} className="flex items-start gap-3">
-              <UserAvatar name={item.profile?.full_name} url={item.profile?.avatar_url} size="sm" />
-              <div>
-                <p className="text-sm">{activityText(item)}</p>
-                <p className="text-xs text-muted">{formatDateTime(item.created_at)}</p>
+      <section className="rounded-2xl border border-line bg-white">
+        <button
+          type="button"
+          className="flex w-full items-center justify-between gap-3 p-4 text-left"
+          aria-expanded={activitiesOpen}
+          onClick={toggleActivities}
+        >
+          <h2 className="text-lg font-semibold">Son aktiviteler</h2>
+          <ChevronDown className={`h-5 w-5 shrink-0 text-muted transition ${activitiesOpen ? "rotate-180" : ""}`} />
+        </button>
+        {activitiesOpen ? (
+          <div className="space-y-3 px-4 pb-4">
+            {activitiesLoading ? <p className="text-sm text-muted">Yükleniyor...</p> : null}
+            {!activitiesLoading && activities?.length === 0 ? <p className="text-sm text-muted">Henüz aktivite yok.</p> : null}
+            {(activities || []).map((item) => (
+              <div key={item.id} className="flex items-start gap-3">
+                <UserAvatar name={item.profile?.full_name} url={item.profile?.avatar_url} size="sm" />
+                <div>
+                  <p className="text-sm">{activityText(item)}</p>
+                  <p className="text-xs text-muted">{formatDateTime(item.created_at)}</p>
+                </div>
               </div>
-            </div>
-          ))}
-        </div>
+            ))}
+          </div>
+        ) : null}
       </section>
 
       {goalForm ? (
@@ -277,6 +310,48 @@ export default function DashboardView() {
       {pendingDelete ? (
         <ConfirmDialog title="Hedefi sil" message={`${pendingDelete.title} silinsin mi?`} onClose={() => setPendingDelete(null)} onConfirm={removeGoal} />
       ) : null}
+    </div>
+  );
+}
+
+function GoalCardMenu({ onEdit, onDelete }) {
+  const [open, setOpen] = useState(false);
+  const anchorRef = useRef(null);
+
+  return (
+    <div className="shrink-0">
+      <button
+        ref={anchorRef}
+        type="button"
+        aria-label="Diğer işlemler"
+        aria-expanded={open}
+        className="grid h-9 w-9 place-items-center rounded-xl text-zinc-500 hover:bg-zinc-100"
+        onClick={() => setOpen((current) => !current)}
+      >
+        <MoreHorizontal className="h-5 w-5" />
+      </button>
+      <AnchoredMenu open={open} anchorRef={anchorRef} onClose={() => setOpen(false)} align="end" width={168}>
+        <button
+          type="button"
+          className="flex w-full items-center rounded-lg px-3 py-2 text-left text-sm hover:bg-zinc-50"
+          onClick={() => {
+            setOpen(false);
+            onEdit();
+          }}
+        >
+          Düzenle
+        </button>
+        <button
+          type="button"
+          className="flex w-full items-center rounded-lg px-3 py-2 text-left text-sm text-rose-600 hover:bg-rose-50"
+          onClick={() => {
+            setOpen(false);
+            onDelete();
+          }}
+        >
+          Sil
+        </button>
+      </AnchoredMenu>
     </div>
   );
 }

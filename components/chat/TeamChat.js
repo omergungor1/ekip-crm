@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { CheckCheck, MessageCircle, Plus, Send, X } from "lucide-react";
 import { toast } from "sonner";
 import UserAvatar from "@/components/ui/UserAvatar";
@@ -44,6 +44,28 @@ function extensionFor(type) {
   return "png";
 }
 
+const PAGE_SIZE = 20;
+
+function byTime(a, b) {
+  const time = new Date(a.created_at) - new Date(b.created_at);
+  if (time) return time;
+  return String(a.id).localeCompare(String(b.id));
+}
+
+function pageFrom(rows) {
+  const list = rows || [];
+  const hasMore = list.length > PAGE_SIZE;
+  const page = (hasMore ? list.slice(0, PAGE_SIZE) : list).slice().reverse();
+  return { page, hasMore };
+}
+
+function mergeMessages(current, incoming) {
+  const map = new Map();
+  for (const item of current) map.set(item.id, item);
+  for (const item of incoming) map.set(item.id, item);
+  return [...map.values()].sort(byTime);
+}
+
 export default function TeamChat() {
   const profile = useProfile();
   const [open, setOpen] = useState(false);
@@ -54,18 +76,28 @@ export default function TeamChat() {
   const [preview, setPreview] = useState("");
   const [busy, setBusy] = useState(false);
   const [readersFor, setReadersFor] = useState(null);
+  const [hasMore, setHasMore] = useState(false);
   const listRef = useRef(null);
   const fileRef = useRef(null);
   const openRef = useRef(false);
   const peopleRef = useRef([]);
+  const messagesRef = useRef([]);
+  const hasMoreRef = useRef(false);
+  const loadingOlderRef = useRef(false);
+  const stickToBottomRef = useRef(true);
+  const scrollAnchorRef = useRef(null);
+  const listReadyRef = useRef(false);
+  const topRef = useRef(null);
   openRef.current = open;
+  messagesRef.current = messages;
+  hasMoreRef.current = hasMore;
 
   useEffect(() => {
     if (!profile?.id) return undefined;
     const supabase = createClient();
     return startRequest(async (isActive) => {
       const [{ data: rows, error }, { data: count, error: countError }, { data: people }] = await Promise.all([
-        supabase.from("chat_messages").select(MESSAGE_SELECT).order("created_at", { ascending: false }).limit(80),
+        supabase.from("chat_messages").select(MESSAGE_SELECT).order("created_at", { ascending: false }).limit(PAGE_SIZE + 1),
         supabase.rpc("unread_chat_count"),
         supabase.from("profiles").select("id, full_name, username, avatar_url").eq("is_active", true),
       ]);
@@ -75,7 +107,9 @@ export default function TeamChat() {
         return;
       }
       peopleRef.current = people || [];
-      setMessages((rows || []).slice().reverse());
+      const firstPage = pageFrom(rows);
+      setMessages(firstPage.page);
+      setHasMore(firstPage.hasMore);
       setUnread(Number(count) || 0);
     });
   }, [profile?.id]);
@@ -86,10 +120,13 @@ export default function TeamChat() {
 
     async function refresh() {
       const [{ data: rows }, { data: count }] = await Promise.all([
-        supabase.from("chat_messages").select(MESSAGE_SELECT).order("created_at", { ascending: false }).limit(80),
+        supabase.from("chat_messages").select(MESSAGE_SELECT).order("created_at", { ascending: false }).limit(PAGE_SIZE + 1),
         supabase.rpc("unread_chat_count"),
       ]);
-      if (rows) setMessages(rows.slice().reverse());
+      if (rows) {
+        const latest = pageFrom(rows);
+        setMessages((current) => mergeMessages(current, latest.page));
+      }
       if (openRef.current) {
         await supabase.rpc("mark_chat_read");
         setUnread(0);
@@ -138,11 +175,22 @@ export default function TeamChat() {
     };
   }, [profile?.id]);
 
-  useEffect(() => {
-    if (!open) return;
+  useLayoutEffect(() => {
+    if (!open) {
+      listReadyRef.current = false;
+      return;
+    }
     const node = listRef.current;
-    if (node) node.scrollTop = node.scrollHeight;
-  }, [open, messages, readersFor]);
+    if (!node) return;
+    const anchor = scrollAnchorRef.current;
+    if (anchor) {
+      scrollAnchorRef.current = null;
+      node.scrollTop = anchor.top + (node.scrollHeight - anchor.height);
+    } else if (stickToBottomRef.current) {
+      node.scrollTop = node.scrollHeight;
+    }
+    listReadyRef.current = true;
+  }, [open, messages]);
 
   useEffect(() => {
     return () => {
@@ -150,8 +198,83 @@ export default function TeamChat() {
     };
   }, [preview]);
 
+  const loadOlder = useCallback(async () => {
+    if (loadingOlderRef.current || !hasMoreRef.current) return;
+    const oldest = messagesRef.current[0];
+    const node = listRef.current;
+    if (!oldest || !node || node.scrollHeight <= node.clientHeight + 8) return;
+    loadingOlderRef.current = true;
+    const supabase = createClient();
+    const { data, error } = await supabase
+      .from("chat_messages")
+      .select(MESSAGE_SELECT)
+      .lt("created_at", oldest.created_at)
+      .order("created_at", { ascending: false })
+      .limit(PAGE_SIZE + 1);
+    loadingOlderRef.current = false;
+    if (error) {
+      toast.error(errorMessage(error, "Eski mesajlar yüklenemedi."));
+      return;
+    }
+    const olderPage = pageFrom(data);
+    const known = new Set(messagesRef.current.map((item) => item.id));
+    const older = olderPage.page.filter((item) => !known.has(item.id));
+    if (!older.length) {
+      if (!olderPage.hasMore) setHasMore(false);
+      return;
+    }
+    setHasMore(olderPage.hasMore);
+    scrollAnchorRef.current = { height: node.scrollHeight, top: node.scrollTop };
+    setMessages((current) => {
+      const ids = new Set(current.map((item) => item.id));
+      const next = older.filter((item) => !ids.has(item.id));
+      return next.length ? [...next, ...current] : current;
+    });
+  }, []);
+
+  useEffect(() => {
+    if (!open) return undefined;
+    const root = listRef.current;
+    if (!root) return undefined;
+    function onNativeScroll() {
+      if (!listReadyRef.current) return;
+      const distance = root.scrollHeight - root.scrollTop - root.clientHeight;
+      stickToBottomRef.current = distance < 64;
+      if (root.scrollTop < 80) loadOlder();
+    }
+    root.addEventListener("scroll", onNativeScroll, { passive: true });
+    const target = topRef.current;
+    let observer;
+    if (hasMore && target) {
+      observer = new IntersectionObserver((entries) => {
+        if (!listReadyRef.current) return;
+        if (entries.some((entry) => entry.isIntersecting)) loadOlder();
+      }, { root, rootMargin: "80px 0px 0px 0px", threshold: 0 });
+      observer.observe(target);
+    }
+    return () => {
+      root.removeEventListener("scroll", onNativeScroll);
+      observer?.disconnect();
+    };
+  }, [open, hasMore, messages.length, loadOlder]);
+
+  function onListScroll() {
+    const node = listRef.current;
+    if (!node || !listReadyRef.current) return;
+    const distanceFromBottom = node.scrollHeight - node.scrollTop - node.clientHeight;
+    stickToBottomRef.current = distanceFromBottom < 64;
+    if (node.scrollTop < 64) loadOlder();
+  }
+
+  function keepBottom() {
+    if (!stickToBottomRef.current) return;
+    const node = listRef.current;
+    if (node) node.scrollTop = node.scrollHeight;
+  }
+
   async function toggle() {
     const next = !open;
+    if (next) stickToBottomRef.current = true;
     setOpen(next);
     setReadersFor(null);
     if (!next) return;
@@ -209,6 +332,7 @@ export default function TeamChat() {
         .select(MESSAGE_SELECT)
         .single();
       if (error) throw error;
+      stickToBottomRef.current = true;
       setMessages((current) => (current.some((item) => item.id === data.id) ? current : [...current, data]));
       setDraft("");
       clearFile();
@@ -235,7 +359,8 @@ export default function TeamChat() {
               <X className="h-5 w-5" />
             </button>
           </header>
-          <div ref={listRef} className="min-h-0 flex-1 space-y-3 overflow-y-auto px-3 py-3">
+          <div ref={listRef} className="min-h-0 flex-1 space-y-3 overflow-y-auto px-3 py-3" onScroll={onListScroll}>
+            {hasMore ? <div ref={topRef} className="h-px" /> : null}
             {messages.length === 0 ? (
               <p className="px-2 pt-8 text-center text-sm text-muted">Henüz mesaj yok. Ekibe bir şey yaz.</p>
             ) : null}
@@ -249,7 +374,7 @@ export default function TeamChat() {
                     {mine ? null : <p className="mb-1 px-1 text-xs font-medium text-muted">{displayName(item.sender)}</p>}
                     <div className={`rounded-2xl px-3 py-2 ${mine ? "rounded-br-md bg-accent text-white" : "rounded-bl-md bg-zinc-100 text-ink"}`}>
                       {item.image_path ? (
-                        <img src={imageUrl(item.image_path)} alt="" className="mb-1 max-h-52 w-full rounded-xl object-cover" />
+                        <img src={imageUrl(item.image_path)} alt="" className="mb-1 max-h-52 w-full rounded-xl object-cover" onLoad={keepBottom} />
                       ) : null}
                       {item.body ? <p className="whitespace-pre-wrap text-sm leading-5">{item.body}</p> : null}
                       <p className={`mt-1 text-[11px] ${mine ? "text-white/75" : "text-muted"}`}>{chatTime(item.created_at)}</p>
