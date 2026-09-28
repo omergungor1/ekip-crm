@@ -3,6 +3,7 @@
 import { createContext, useContext, useEffect, useState } from "react";
 import { usePathname } from "next/navigation";
 import { toast } from "sonner";
+import TeamChat from "@/components/chat/TeamChat";
 import AppHeader from "@/components/layout/AppHeader";
 import AppSidebar from "@/components/layout/AppSidebar";
 import { SocialProjectContext } from "@/components/layout/SocialProjectContext";
@@ -79,6 +80,7 @@ export default function AppShell({ profile, children }) {
     return (
       <ProfileContext.Provider value={profile}>
         <div className="fixed inset-0 z-40 h-dvh overflow-hidden bg-white text-ink">{children}</div>
+        <TeamChat />
       </ProfileContext.Provider>
     );
   }
@@ -101,6 +103,7 @@ export default function AppShell({ profile, children }) {
             />
             <main className="px-4 py-5 sm:px-6 lg:px-8">{children}</main>
           </div>
+          <TeamChat />
         </div>
       </SocialProjectContext.Provider>
     </ProfileContext.Provider>

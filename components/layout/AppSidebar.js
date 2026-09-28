@@ -1,5 +1,6 @@
 "use client";
 
+import Image from "next/image";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
@@ -48,9 +49,7 @@ export default function AppSidebar({ collapsed, mobileOpen, onNavigate }) {
       >
         <div className="flex h-16 items-center justify-between gap-2 px-4">
           <Link href="/" className="flex min-w-0 items-center gap-2.5" onClick={onNavigate}>
-            <span className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-accent text-sm font-semibold text-white">
-              E
-            </span>
+            <Image src="/logo.png" alt="" width={36} height={36} className="h-9 w-9 shrink-0 rounded-xl" />
             <span className={`truncate text-base font-semibold ${collapsed ? "lg:hidden" : ""}`}>
               Ekip
             </span>
