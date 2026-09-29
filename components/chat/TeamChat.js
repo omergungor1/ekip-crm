@@ -10,12 +10,17 @@ import { startRequest } from "@/lib/load";
 import { createClient } from "@/lib/supabase/client";
 
 const MESSAGE_SELECT = `
-  id, body, image_path, created_at, sender_id,
+  id, body, image_path, created_at, sender_id, reply_to_id,
   sender:profiles!chat_messages_sender_id_fkey(id, full_name, username, avatar_url),
   reads:chat_reads(
     profile_id, read_at,
     reader:profiles!chat_reads_profile_id_fkey(id, full_name, username, avatar_url)
   )
+`;
+
+const REPLY_SELECT = `
+  id, body, image_path, sender_id,
+  sender:profiles!chat_messages_sender_id_fkey(id, full_name, username, avatar_url)
 `;
 
 function displayName(person) {
@@ -35,6 +40,14 @@ function chatTime(value) {
 function imageUrl(path) {
   if (!path) return "";
   return createClient().storage.from("chat").getPublicUrl(path).data.publicUrl;
+}
+
+function replySnippet(item) {
+  if (!item) return "Mesaj";
+  const text = String(item.body || "").replace(/\s+/g, " ").trim();
+  if (text) return text.length > 80 ? `${text.slice(0, 80)}…` : text;
+  if (item.image_path) return "Görsel";
+  return "Mesaj";
 }
 
 function extensionFor(type) {
@@ -59,6 +72,22 @@ function pageFrom(rows) {
   return { page, hasMore };
 }
 
+async function attachReplies(supabase, rows, existing = []) {
+  const list = rows || [];
+  const known = new Map();
+  for (const item of existing) known.set(item.id, item);
+  for (const item of list) known.set(item.id, item);
+  const missing = [...new Set(list.map((item) => item.reply_to_id).filter((id) => id && !known.has(id)))];
+  if (missing.length) {
+    const { data } = await supabase.from("chat_messages").select(REPLY_SELECT).in("id", missing);
+    for (const item of data || []) known.set(item.id, item);
+  }
+  return list.map((item) => ({
+    ...item,
+    reply_to: item.reply_to_id ? known.get(item.reply_to_id) || null : null,
+  }));
+}
+
 function mergeMessages(current, incoming) {
   const map = new Map();
   for (const item of current) map.set(item.id, item);
@@ -77,8 +106,13 @@ export default function TeamChat() {
   const [busy, setBusy] = useState(false);
   const [readersFor, setReadersFor] = useState(null);
   const [hasMore, setHasMore] = useState(false);
+  const [replyTo, setReplyTo] = useState(null);
+  const [holdingId, setHoldingId] = useState(null);
   const listRef = useRef(null);
   const fileRef = useRef(null);
+  const draftRef = useRef(null);
+  const holdRef = useRef(null);
+  const suppressClickRef = useRef(false);
   const openRef = useRef(false);
   const peopleRef = useRef([]);
   const messagesRef = useRef([]);
@@ -108,7 +142,7 @@ export default function TeamChat() {
       }
       peopleRef.current = people || [];
       const firstPage = pageFrom(rows);
-      setMessages(firstPage.page);
+      setMessages(await attachReplies(supabase, firstPage.page));
       setHasMore(firstPage.hasMore);
       setUnread(Number(count) || 0);
     });
@@ -125,7 +159,8 @@ export default function TeamChat() {
       ]);
       if (rows) {
         const latest = pageFrom(rows);
-        setMessages((current) => mergeMessages(current, latest.page));
+        const page = await attachReplies(supabase, latest.page);
+        setMessages((current) => mergeMessages(current, page));
       }
       if (openRef.current) {
         await supabase.rpc("mark_chat_read");
@@ -145,7 +180,8 @@ export default function TeamChat() {
         }
         const { data } = await supabase.from("chat_messages").select(MESSAGE_SELECT).eq("id", id).maybeSingle();
         if (!data) return;
-        setMessages((current) => (current.some((item) => item.id === data.id) ? current : [...current, data]));
+        const [attached] = await attachReplies(supabase, [data], messagesRef.current);
+        setMessages((current) => (current.some((item) => item.id === attached.id) ? current : [...current, attached]));
         if (openRef.current) {
           await supabase.rpc("mark_chat_read");
           setUnread(0);
@@ -198,6 +234,8 @@ export default function TeamChat() {
     };
   }, [preview]);
 
+  useEffect(() => () => clearHold(), []);
+
   const loadOlder = useCallback(async () => {
     if (loadingOlderRef.current || !hasMoreRef.current) return;
     const oldest = messagesRef.current[0];
@@ -218,7 +256,7 @@ export default function TeamChat() {
     }
     const olderPage = pageFrom(data);
     const known = new Set(messagesRef.current.map((item) => item.id));
-    const older = olderPage.page.filter((item) => !known.has(item.id));
+    const older = await attachReplies(supabase, olderPage.page.filter((item) => !known.has(item.id)), messagesRef.current);
     if (!older.length) {
       if (!olderPage.hasMore) setHasMore(false);
       return;
@@ -277,6 +315,7 @@ export default function TeamChat() {
     if (next) stickToBottomRef.current = true;
     setOpen(next);
     setReadersFor(null);
+    if (!next) setReplyTo(null);
     if (!next) return;
     const supabase = createClient();
     const { error } = await supabase.rpc("mark_chat_read");
@@ -307,6 +346,55 @@ export default function TeamChat() {
     setPreview("");
   }
 
+  function clearHold() {
+    const hold = holdRef.current;
+    if (!hold) return;
+    window.clearTimeout(hold.timer);
+    window.removeEventListener("pointermove", hold.onMove);
+    window.removeEventListener("pointerup", hold.onUp);
+    window.removeEventListener("pointercancel", hold.onUp);
+    holdRef.current = null;
+    setHoldingId(null);
+  }
+
+  function beginHold(event, item) {
+    if (event.pointerType === "mouse" && event.button !== 0) return;
+    clearHold();
+    const startX = event.clientX;
+    const startY = event.clientY;
+    const pointerId = event.pointerId;
+    function onMove(moveEvent) {
+      const hold = holdRef.current;
+      if (!hold || moveEvent.pointerId !== pointerId) return;
+      if (Math.hypot(moveEvent.clientX - startX, moveEvent.clientY - startY) > 10) clearHold();
+    }
+    function onUp(upEvent) {
+      if (upEvent.pointerId !== pointerId) return;
+      clearHold();
+    }
+    const timer = window.setTimeout(() => {
+      suppressClickRef.current = true;
+      setReplyTo(item);
+      setHoldingId(null);
+      draftRef.current?.focus();
+      if (navigator.vibrate) navigator.vibrate(12);
+    }, 450);
+    holdRef.current = { timer, onMove, onUp };
+    setHoldingId(item.id);
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+    window.addEventListener("pointercancel", onUp);
+  }
+
+  function jumpTo(id) {
+    if (suppressClickRef.current) {
+      suppressClickRef.current = false;
+      return;
+    }
+    const node = listRef.current?.querySelector(`[data-message-id="${id}"]`);
+    node?.scrollIntoView({ block: "center", behavior: "smooth" });
+  }
+
   async function send() {
     const text = draft.trim();
     if ((!text && !file) || busy) return;
@@ -328,13 +416,25 @@ export default function TeamChat() {
       }
       const { data, error } = await supabase
         .from("chat_messages")
-        .insert({ sender_id: profile.id, body: text || null, image_path: imagePath || null })
+        .insert({
+          sender_id: profile.id,
+          body: text || null,
+          image_path: imagePath || null,
+          reply_to_id: replyTo?.id || null,
+        })
         .select(MESSAGE_SELECT)
         .single();
       if (error) throw error;
+      const sent = {
+        ...data,
+        reply_to: replyTo
+          ? { id: replyTo.id, body: replyTo.body, image_path: replyTo.image_path, sender_id: replyTo.sender_id, sender: replyTo.sender }
+          : null,
+      };
       stickToBottomRef.current = true;
-      setMessages((current) => (current.some((item) => item.id === data.id) ? current : [...current, data]));
+      setMessages((current) => (current.some((item) => item.id === sent.id) ? current : [...current, sent]));
       setDraft("");
+      setReplyTo(null);
       clearFile();
     } catch (error) {
       if (imagePath) await supabase.storage.from("chat").remove([imagePath]);
@@ -368,11 +468,25 @@ export default function TeamChat() {
               const mine = item.sender_id === profile.id;
               const reads = item.reads || [];
               return (
-                <div key={item.id} className={`flex items-end gap-2 ${mine ? "justify-end" : ""}`}>
+                <div key={item.id} data-message-id={item.id} className={`flex items-end gap-2 ${mine ? "justify-end" : ""}`}>
                   {mine ? null : <UserAvatar name={displayName(item.sender)} url={item.sender?.avatar_url} size="sm" />}
                   <div className={`max-w-[80%] ${mine ? "items-end" : ""} flex flex-col`}>
                     {mine ? null : <p className="mb-1 px-1 text-xs font-medium text-muted">{displayName(item.sender)}</p>}
-                    <div className={`rounded-2xl px-3 py-2 ${mine ? "rounded-br-md bg-accent text-white" : "rounded-bl-md bg-zinc-100 text-ink"}`}>
+                    <div
+                      className={`touch-pan-y select-none rounded-2xl px-3 py-2 ${holdingId === item.id ? "brightness-90" : ""} ${mine ? "rounded-br-md bg-accent text-white" : "rounded-bl-md bg-zinc-100 text-ink"}`}
+                      onPointerDown={(event) => beginHold(event, item)}
+                      onContextMenu={(event) => event.preventDefault()}
+                    >
+                      {item.reply_to ? (
+                        <button
+                          type="button"
+                          className={`mb-1.5 block w-full rounded-lg border-l-2 px-2 py-1 text-left ${mine ? "border-white/80 bg-black/10" : "border-accent bg-white"}`}
+                          onClick={() => jumpTo(item.reply_to.id)}
+                        >
+                          <p className={`truncate text-[11px] font-semibold ${mine ? "text-white" : "text-accent"}`}>{displayName(item.reply_to.sender)}</p>
+                          <p className={`truncate text-[11px] ${mine ? "text-white/80" : "text-muted"}`}>{replySnippet(item.reply_to)}</p>
+                        </button>
+                      ) : null}
                       {item.image_path ? (
                         <img src={imageUrl(item.image_path)} alt="" className="mb-1 max-h-52 w-full rounded-xl object-cover" onLoad={keepBottom} />
                       ) : null}
@@ -402,6 +516,17 @@ export default function TeamChat() {
               </button>
             </div>
           ) : null}
+          {replyTo ? (
+            <div className="mx-3 mt-2 flex items-start gap-2 rounded-xl border-l-4 border-accent bg-zinc-50 px-3 py-2">
+              <div className="min-w-0 flex-1">
+                <p className="truncate text-xs font-semibold text-accent">{displayName(replyTo.sender)}</p>
+                <p className="truncate text-xs text-muted">{replySnippet(replyTo)}</p>
+              </div>
+              <button type="button" className="grid h-6 w-6 shrink-0 place-items-center rounded-full text-muted hover:bg-zinc-200" aria-label="Yanıtı kaldır" onClick={() => setReplyTo(null)}>
+                <X className="h-3.5 w-3.5" />
+              </button>
+            </div>
+          ) : null}
           <form
             className="flex items-end gap-2 border-t border-line p-3"
             onSubmit={(event) => {
@@ -414,6 +539,7 @@ export default function TeamChat() {
             </button>
             <input ref={fileRef} type="file" accept="image/png,image/jpeg,image/webp,image/gif" className="hidden" onChange={pickFile} />
             <textarea
+              ref={draftRef}
               value={draft}
               rows={1}
               placeholder="Mesaj yaz"
